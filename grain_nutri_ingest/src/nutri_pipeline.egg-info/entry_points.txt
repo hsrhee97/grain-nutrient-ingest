@@ -1,0 +1,2 @@
+[console_scripts]
+nutri-pipeline = nutri_pipeline.cli:main

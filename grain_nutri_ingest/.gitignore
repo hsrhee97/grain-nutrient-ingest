@@ -1,0 +1,14 @@
+# env
+.env
+.env.local
+
+# python venv 폴더들 전부 무시
+.venv/
+venv/
+env/
+ENV/
+
+
+*.sqlite
+*.sqlite3
+*.db
