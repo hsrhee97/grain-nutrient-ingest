@@ -27,6 +27,9 @@ MAX_PAPERS_PER_OPTION = int(os.getenv("MAX_PAPERS_PER_OPTION", "10"))
 # LangGraph 설정
 GRAPH_RECURSION_LIMIT = int(os.getenv("GRAPH_RECURSION_LIMIT", "200"))
 
+# 로그 최대 길이 (메모리 보호용)
+MAX_LOG_ENTRIES = int(os.getenv("MAX_LOG_ENTRIES", "500"))
+
 # 데이터 디렉토리 생성
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 

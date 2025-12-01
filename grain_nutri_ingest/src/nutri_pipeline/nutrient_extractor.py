@@ -46,14 +46,15 @@ class NutrientExtractor:
                 (
                     "system",
                     """당신은 영양학 논문을 분석하는 전문가입니다.
-논문의 제목과 초록을 읽고, 논문에서 실제로 언급된 영양소만 추출하세요.
+논문의 제목과 초록(또는 제목만)을 분석하여 영양소를 추출하세요.
 
 중요 규칙:
-1. 논문에서 실제로 언급된 영양소만 추출 (추측하지 마세요)
-2. good_nutrients: 논문에서 긍정적으로 언급된 영양소 (최대 5개)
-3. bad_nutrients: 논문에서 부정적으로 언급되거나 부족하면 문제가 되는 영양소 (최대 5개)
-4. 없으면 빈 배열로 반환
-5. 영양소 이름은 논문에서 사용된 정확한 용어를 사용하세요
+1. 제목과 초록에서 언급된 영양소, 비타민, 미네랄, 식이섬유, 항산화물질 등을 찾으세요
+2. good_nutrients: 논문에서 긍정적으로 언급되거나 건강에 도움이 되는 영양소 (예: fiber, vitamin C, iron, calcium, omega-3, antioxidants 등) - 최대 5개
+3. bad_nutrients: 논문에서 부정적으로 언급되거나 과다 섭취 시 문제가 되는 영양소 (예: saturated fat, cholesterol, sodium, trans fat 등) - 최대 5개
+4. 제목만 있어도 제목에서 추론 가능한 영양소를 추출하세요
+5. 영양소 이름은 영어로 표준 용어를 사용하세요 (예: "fiber" not "fibre", "vitamin C" not "vit C")
+6. 논문이 잡곡(whole grain) 관련이면 일반적인 잡곡 영양소도 포함 가능합니다
 
 출력 형식은 JSON이어야 합니다.""",
                 ),
@@ -66,7 +67,7 @@ class NutrientExtractor:
 초록:
 {abstract}
 
-JSON 형식으로 good_nutrients와 bad_nutrients를 반환하세요.""",
+JSON 형식으로 good_nutrients와 bad_nutrients를 반환하세요. 각각 최대 5개까지 추출하세요.""",
                 ),
             ]
         )
@@ -76,11 +77,14 @@ JSON 형식으로 good_nutrients와 bad_nutrients를 반환하세요.""",
 
     def extract_nutrients_from_paper(self, title: str, abstract: Optional[str] = None) -> Dict[str, List[str]]:
         """논문에서 영양소 추출."""
-        if not abstract:
-            abstract = "초록 정보 없음"
+        # 초록이 없거나 너무 짧으면 제목만으로 추출 시도
+        if not abstract or len(abstract.strip()) < 20:
+            abstract = "초록 정보 없음. 제목만으로 분석해주세요."
+            logger.warning(f"초록이 없거나 짧음. 제목만으로 추출 시도: '{title[:50]}...'")
+        else:
+            logger.info(f"영양소 추출 중: '{title[:50]}...'")
 
         try:
-            logger.info(f"영양소 추출 중: '{title[:50]}...'")
             result = self.chain.invoke({"title": title, "abstract": abstract})
 
             # Pydantic 모델을 dict로 변환
@@ -88,6 +92,21 @@ JSON 형식으로 good_nutrients와 bad_nutrients를 반환하세요.""",
                 "good_nutrients": result.good_nutrients if result.good_nutrients else [],
                 "bad_nutrients": result.bad_nutrients if result.bad_nutrients else [],
             }
+
+            # 결과가 비어있으면 재시도 (더 적극적인 프롬프트로)
+            if not nutrients["good_nutrients"] and not nutrients["bad_nutrients"]:
+                logger.warning(f"영양소 추출 실패, 재시도 중: '{title[:50]}...'")
+                # 재시도 시 더 적극적인 프롬프트 사용
+                retry_prompt = ChatPromptTemplate.from_messages([
+                    ("system", "당신은 영양학 논문 분석 전문가입니다. 제목과 초록에서 영양소를 적극적으로 찾아주세요. 잡곡(whole grain) 논문이라면 일반적인 잡곡 영양소(fiber, B vitamins, minerals 등)도 포함하세요."),
+                    ("human", "제목: {title}\n초록: {abstract}\n\n이 논문에서 언급되거나 추론 가능한 영양소를 찾아주세요. good_nutrients와 bad_nutrients를 JSON 형식으로 반환하세요.")
+                ])
+                retry_chain = retry_prompt | self.llm.with_structured_output(NutrientList)
+                retry_result = retry_chain.invoke({"title": title, "abstract": abstract})
+                nutrients = {
+                    "good_nutrients": retry_result.good_nutrients if retry_result.good_nutrients else [],
+                    "bad_nutrients": retry_result.bad_nutrients if retry_result.bad_nutrients else [],
+                }
 
             logger.info(
                 f"추출 완료 - 좋은 영양소: {len(nutrients['good_nutrients'])}개, "

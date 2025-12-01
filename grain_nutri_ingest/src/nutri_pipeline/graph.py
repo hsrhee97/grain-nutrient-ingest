@@ -11,9 +11,21 @@ from .paper_search import search_papers_for_option, PaperCandidate
 from .nutrient_extractor import get_extractor
 from .db import get_db_session
 from .models import SurveyOption, Paper, Nutrient
+from .config import MAX_LOG_ENTRIES
 
 logger = logging.getLogger(__name__)
 
+
+def _append_logs(existing: List[str], new: List[str]) -> List[str]:
+    """로그를 누적하되 최대 길이를 제한해 메모리 폭증을 막는다."""
+
+    if not new:
+        return existing
+
+    combined = existing + new
+    if len(combined) > MAX_LOG_ENTRIES:
+        combined = combined[-MAX_LOG_ENTRIES:]
+    return combined
 
 class PipelineState(TypedDict):
     """파이프라인 상태 정의."""
@@ -24,7 +36,8 @@ class PipelineState(TypedDict):
     papers: List[PaperCandidate]  # 검색된 논문들
     extracted_data: List[dict]  # 추출된 영양소 데이터 (paper + nutrients)
     logs: Annotated[List[str], add]  # 진행 로그
-
+     # 진행 로그는 각 노드가 추가 로그만 반환하고 LangGraph가 누적한다.
+    logs: Annotated[List[str], _append_logs]
 
 def load_options_node(state: PipelineState) -> PipelineState:
     """설문 옵션을 로드하는 노드."""
@@ -34,7 +47,7 @@ def load_options_node(state: PipelineState) -> PipelineState:
         **state,
         "options": options,
         "processed_option_ids": state.get("processed_option_ids", []),
-        "logs": state.get("logs", []) + [f"설문 옵션 {len(options)}개 로드 완료"],
+        "logs": [f"설문 옵션 {len(options)}개 로드 완료"],
     }
 
 
@@ -57,14 +70,14 @@ def select_next_option_node(state: PipelineState) -> PipelineState:
             "current_option": next_option,
             "papers": [],
             "extracted_data": [],
-            "logs": state.get("logs", []) + [f"옵션 선택: {next_option['option_label']}"],
+            "logs": [f"옵션 선택: {next_option['option_label']}"],
         }
     else:
         logger.info("모든 옵션 처리 완료")
         return {
             **state,
             "current_option": None,
-            "logs": state.get("logs", []) + ["모든 옵션 처리 완료"],
+            "logs": ["모든 옵션 처리 완료"],
         }
 
 
@@ -79,7 +92,7 @@ def search_papers_node(state: PipelineState) -> PipelineState:
     """논문 검색 노드."""
     current_option = state.get("current_option")
     if not current_option:
-        return state
+        return {**state, "logs": []}
 
     logger.info(f"논문 검색 시작: {current_option['option_label']}")
     papers = search_papers_for_option(current_option)
@@ -87,7 +100,7 @@ def search_papers_node(state: PipelineState) -> PipelineState:
     return {
         **state,
         "papers": papers,
-        "logs": state.get("logs", []) + [f"논문 {len(papers)}개 검색 완료"],
+        "logs": [f"논문 {len(papers)}개 검색 완료"],
     }
 
 
@@ -95,7 +108,7 @@ def extract_nutrients_node(state: PipelineState) -> PipelineState:
     """영양소 추출 노드."""
     papers = state.get("papers", [])
     if not papers:
-        return state
+        return {**state, "logs": []}
 
     extractor = get_extractor()
     extracted_data = []
@@ -115,7 +128,7 @@ def extract_nutrients_node(state: PipelineState) -> PipelineState:
     return {
         **state,
         "extracted_data": extracted_data,
-        "logs": state.get("logs", []) + [f"영양소 추출 완료: {len(extracted_data)}개 논문"],
+        "logs": [f"영양소 추출 완료: {len(extracted_data)}개 논문"],
     }
 
 
@@ -125,7 +138,7 @@ def save_to_db_node(state: PipelineState) -> PipelineState:
     extracted_data = state.get("extracted_data", [])
 
     if not current_option or not extracted_data:
-        return state
+        return {**state, "logs": []}
 
     try:
         with get_db_session() as session:
@@ -199,14 +212,14 @@ def save_to_db_node(state: PipelineState) -> PipelineState:
             return {
                 **state,
                 "processed_option_ids": processed_ids,
-                "logs": state.get("logs", []) + [f"DB 저장 완료: {saved_count}개 논문"],
+                "logs": [f"DB 저장 완료: {saved_count}개 논문"],
             }
 
     except Exception as e:
         logger.error(f"DB 저장 중 오류: {e}")
         return {
             **state,
-            "logs": state.get("logs", []) + [f"DB 저장 오류: {str(e)}"],
+            "logs": [f"DB 저장 오류: {str(e)}"],
         }
 
 
